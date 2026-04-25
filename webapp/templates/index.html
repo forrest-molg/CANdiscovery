@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CANdiscovery — CAN Bus Health Monitor</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:         #e8edf5;
+      --bg-deep:    #dde3ed;
+      --surface:    #edf1f7;
+      --navy:       #1a2744;
+      --navy-mid:   #243459;
+      --navy-light: #2e4275;
+      --accent:     #3a6bd4;
+      --accent-lit: #5585e8;
+      --green:      #1e8a4a;
+      --green-bg:   #d6f0e3;
+      --red:        #c0392b;
+      --red-bg:     #fde8e6;
+      --yellow:     #b8840a;
+      --yellow-bg:  #fef3d8;
+      --blue-bg:    #dceeff;
+      --purple:     #6b46c1;
+      --teal:       #0d7377;
+      --orange:     #c85a1a;
+      --text:       #1a2744;
+      --text-mid:   #3a4a6b;
+      --muted:      #7a8aab;
+      --hex:        #2563eb;
+      --decoded:    #1a5fb4;
+      --border:     rgba(26,39,68,0.12);
+      --light-sh:   #ffffff;
+      --dark-sh:    rgba(166,180,210,0.75);
+      --raised:     5px 5px 12px var(--dark-sh), -5px -5px 12px var(--light-sh);
+      --raised-sm:  3px 3px 7px var(--dark-sh), -3px -3px 7px var(--light-sh);
+      --inset:      inset 3px 3px 7px var(--dark-sh), inset -3px -3px 7px var(--light-sh);
+      --radius:     12px;
+      --radius-sm:  8px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────────── */
+    header {
+      background: var(--navy);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      box-shadow: 0 3px 10px rgba(26,39,68,0.35);
+    }
+    header h1 { font-size:1.15rem; font-weight:700; color:#fff; letter-spacing:-0.3px; white-space:nowrap; }
+    header h1 span { color:#7aaff8; }
+    header h1 small { font-size:0.65rem; color:rgba(255,255,255,0.38); font-weight:400; margin-left:6px; }
+
+    button {
+      background:var(--bg); color:var(--text-mid); border:none;
+      border-radius:var(--radius-sm); padding:6px 14px; font-size:0.82rem;
+      cursor:pointer; box-shadow:var(--raised-sm);
+      transition:box-shadow 0.12s, transform 0.08s, background 0.12s;
+      white-space:nowrap;
+    }
+    button:hover  { box-shadow:var(--raised); }
+    button:active { box-shadow:var(--inset); transform:scale(0.97); }
+    button:disabled { opacity:0.4; cursor:default; box-shadow:var(--raised-sm); }
+    header button { background:var(--navy-mid); color:#e8f0ff; box-shadow:2px 2px 5px rgba(0,0,0,0.35),-1px -1px 3px rgba(255,255,255,0.06); }
+    header button:hover  { background:var(--navy-light); }
+    header button:active { background:var(--navy); }
+
+    .pill-group { margin-left:auto; display:flex; align-items:center; gap:8px; }
+    #status-pill, #log-pill {
+      font-size:0.75rem; padding:4px 11px; border-radius:20px;
+      border:1px solid rgba(255,255,255,0.18);
+      color:rgba(255,255,255,0.5); white-space:nowrap;
+      background:var(--navy-mid);
+    }
+    #status-pill.running { border-color:#6ee8a2; color:#6ee8a2; }
+    #status-pill.stopped { border-color:rgba(255,255,255,0.25); color:rgba(255,255,255,0.45); }
+    #status-pill.error   { border-color:#f88; color:#f88; }
+    #log-pill.logging    { border-color:#7aaff8; color:#7aaff8; }
+
+    #dwf-banner {
+      display:none; background:#7c2d12; color:#fed7aa;
+      font-size:0.82rem; padding:8px 20px; flex-shrink:0;
+      border-bottom:1px solid rgba(255,255,255,0.1);
+    }
+    #dwf-banner a { color:#fbbf24; }
+
+    /* ── Config bar & Tabs ────────────────────────────────────────────────── */
+    .config-bar {
+      background:var(--surface); border-bottom:1px solid var(--border);
+      padding:8px 20px; display:flex; align-items:center; gap:12px;
+      flex-wrap:wrap; flex-shrink:0;
+    }
+    .config-bar label { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    select {
+      background:var(--bg); color:var(--text); border:none;
+      border-radius:var(--radius-sm); padding:6px 10px;
+      font-size:0.8rem; font-family:'Cascadia Code',Consolas,monospace;
+      box-shadow:var(--inset); outline:none; cursor:pointer;
+    }
+    #btn-scan { color:var(--accent); font-weight:600; }
+    #device-badge {
+      font-size:0.72rem; padding:3px 10px; border-radius:12px;
+      background:var(--bg); box-shadow:var(--raised-sm);
+      color:var(--muted); white-space:nowrap;
+    }
+    #device-badge.ok  { color:var(--green); }
+    #device-badge.err { color:var(--red); }
+
+    .tabs { background:var(--surface); border-bottom:2px solid var(--border); display:flex; gap:0; flex-shrink:0; }
+    .tab-btn {
+      background:transparent; box-shadow:none; border-radius:0;
+      border-bottom:3px solid transparent;
+      padding:10px 22px; font-size:0.85rem; font-weight:600;
+      color:var(--muted); cursor:pointer; transition:color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color:var(--text); }
+    .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+    .tab-btn:active { box-shadow:none; transform:none; }
+    .tab-pane { display:none; flex:1; flex-direction:column; overflow:hidden; }
+    .tab-pane.active { display:flex; }
+
+    /* ── Digital tab ─────────────────────────────────────────────────────── */
+    .stats-bar {
+      font-size:0.78rem; color:var(--muted);
+      padding:6px 20px; border-bottom:1px solid var(--border);
+      background:var(--bg); display:flex; gap:24px; flex-shrink:0;
+    }
+    .stats-bar strong { color:var(--navy); }
+    #capture-warn {
+      display:none; background:var(--yellow-bg); color:var(--yellow);
+      border-left:3px solid var(--yellow); border-radius:var(--radius-sm);
+      padding:6px 14px; font-size:0.78rem; flex-shrink:0;
+    }
+
+    #msg-panel { background:var(--bg); border-bottom:2px solid var(--border); max-height:200px; overflow-y:auto; flex-shrink:0; }
+    #msg-panel-header {
+      position:sticky; top:0; background:var(--navy); padding:7px 16px;
+      font-size:0.72rem; color:rgba(255,255,255,0.6);
+      text-transform:uppercase; letter-spacing:0.6px;
+      border-bottom:1px solid rgba(255,255,255,0.08);
+      display:flex; gap:20px; align-items:center;
+    }
+    #msg-panel-header .label { color:#c9a6ff; font-weight:700; }
+    .msg-card { border-bottom:1px solid var(--border); padding:8px 16px; animation:flash-msg 0.5s ease-out; }
+    @keyframes flash-msg { from { background:#dceeff; } to { background:transparent; } }
+    .msg-meta { font-size:0.7rem; color:var(--muted); font-family:monospace; margin-bottom:4px; display:flex; gap:14px; }
+    .msg-meta .mid { color:var(--yellow); font-weight:600; }
+    .msg-meta .mframes { color:var(--purple); }
+    .msg-raw { font-family:'Cascadia Code',Consolas,monospace; font-size:0.8rem; color:var(--text-mid); white-space:pre-wrap; word-break:break-all; }
+    .msg-raw.is-json { color:var(--green); }
+    details summary { cursor:pointer; color:var(--muted); font-size:0.72rem; margin-top:4px; }
+    details pre { margin-top:6px; padding:10px; background:var(--navy); color:#a5d6ff; border-radius:var(--radius-sm); font-size:0.78rem; overflow-x:auto; white-space:pre; font-family:monospace; }
+    .msg-empty { padding:20px; text-align:center; color:var(--muted); font-size:0.85rem; }
+
+    .section-label {
+      padding:5px 16px; font-size:0.7rem; color:rgba(255,255,255,0.5);
+      text-transform:uppercase; letter-spacing:0.6px;
+      background:var(--navy); border-bottom:1px solid rgba(255,255,255,0.08); flex-shrink:0;
+    }
+    .table-wrap { flex:1; overflow-y:auto; min-height:0; }
+    .table-wrap::-webkit-scrollbar { width:6px; }
+    .table-wrap::-webkit-scrollbar-track { background:var(--bg-deep); }
+    .table-wrap::-webkit-scrollbar-thumb { background:var(--dark-sh); border-radius:99px; }
+    table { width:100%; border-collapse:collapse; font-size:0.8rem; font-family:'Cascadia Code',Consolas,monospace; }
+    thead th {
+      position:sticky; top:0; background:var(--navy-mid);
+      color:rgba(255,255,255,0.55); border-bottom:1px solid rgba(255,255,255,0.1);
+      padding:7px 12px; text-align:left; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.6px;
+    }
+    tbody tr { border-bottom:1px solid var(--border); }
+    tbody tr:hover { background:var(--blue-bg); }
+    tbody tr.new-row { animation:flash 0.35s ease-out; }
+    @keyframes flash { from { background:#c8dcf8; } to { background:transparent; } }
+    td { padding:4px 12px; vertical-align:top; }
+    .ts { color:var(--muted); white-space:nowrap; }
+    .can-id { color:var(--navy); font-weight:700; }
+    .dlc { color:var(--muted); text-align:center; }
+    .hex-cell { color:var(--hex); letter-spacing:0.5px; }
+    .hex-cell span { margin-right:4px; }
+    .decoded-block { display:flex; flex-wrap:wrap; gap:2px; }
+    .byte-char { display:inline-block; width:22px; text-align:center; color:var(--decoded); }
+    .byte-char.non-print { color:var(--muted); opacity:0.35; }
+    .empty-state { text-align:center; color:var(--muted); padding:40px 20px; font-size:0.9rem; }
+
+    /* ── Analog snapshot tab ──────────────────────────────────────────────── */
+    #analog-pane { padding:16px 20px; overflow-y:auto; gap:16px; }
+    .analog-controls {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised-sm); padding:14px 18px;
+      display:flex; flex-wrap:wrap; align-items:center; gap:14px; flex-shrink:0;
+    }
+    .analog-controls label { font-size:0.82rem; color:var(--muted); white-space:nowrap; }
+    .channel-toggle { display:flex; align-items:center; gap:6px; font-size:0.82rem; font-weight:600; cursor:pointer; }
+    .channel-toggle input[type=checkbox] { width:15px; height:15px; cursor:pointer; }
+    .ch1-label { color:var(--teal); }
+    .ch2-label { color:var(--orange); }
+    #btn-snapshot { color:var(--green); font-size:0.9rem; font-weight:700; padding:8px 22px; }
+    #snapshot-status {
+      font-size:0.78rem; padding:4px 12px; border-radius:12px;
+      background:var(--bg); box-shadow:var(--raised-sm); color:var(--muted); white-space:nowrap;
+    }
+    #snapshot-status.busy { color:var(--yellow); }
+    #snapshot-status.ok   { color:var(--green); }
+    #snapshot-status.err  { color:var(--red); }
+
+    .chart-card {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised); padding:16px;
+      flex:1; display:flex; flex-direction:column; min-height:280px;
+    }
+    .chart-card h3 { font-size:0.8rem; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; }
+    .chart-wrap { flex:1; position:relative; min-height:220px; }
+
+    .health-cards {
+      display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));
+      gap:12px; flex-shrink:0;
+    }
+    .hcard { background:var(--surface); border-radius:var(--radius); box-shadow:var(--raised-sm); padding:14px 16px; }
+    .hcard .hc-label { font-size:0.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+    .hcard .hc-value { font-size:1.3rem; font-weight:700; color:var(--navy); margin-top:4px; font-family:'Cascadia Code',monospace; }
+    .hcard .hc-sub   { font-size:0.7rem; color:var(--muted); margin-top:2px; }
+    .hcard.good  .hc-value { color:var(--green); }
+    .hcard.warn  .hc-value { color:var(--yellow); }
+    .hcard.bad   .hc-value { color:var(--red); }
+
+    #analog-pane::-webkit-scrollbar { width:6px; }
+    #analog-pane::-webkit-scrollbar-track { background:var(--bg-deep); }
+    #analog-pane::-webkit-scrollbar-thumb { background:var(--dark-sh); border-radius:99px; }
+
+    /* ── Health Check tab ─────────────────────────────────────────────────── */
+    #health-pane { padding:16px 20px; overflow-y:auto; gap:16px; }
+    #health-pane::-webkit-scrollbar { width:6px; }
+    #health-pane::-webkit-scrollbar-track { background:var(--bg-deep); }
+    #health-pane::-webkit-scrollbar-thumb { background:var(--dark-sh); border-radius:99px; }
+
+    .hc-controls {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised-sm); padding:14px 18px;
+      display:flex; flex-wrap:wrap; align-items:center; gap:14px; flex-shrink:0;
+    }
+    #btn-health { color:var(--green); font-size:0.95rem; font-weight:700; padding:9px 26px; }
+    #hc-status {
+      font-size:0.78rem; padding:4px 12px; border-radius:12px;
+      background:var(--bg); box-shadow:var(--raised-sm); color:var(--muted);
+    }
+    #hc-status.busy { color:var(--yellow); }
+    #hc-status.pass { color:var(--green); font-weight:700; }
+    #hc-status.fail { color:var(--red); font-weight:700; }
+
+    .verdict-banner {
+      border-radius:var(--radius); padding:12px 20px;
+      font-size:1rem; font-weight:700; letter-spacing:0.3px;
+      display:none; align-items:center; gap:14px; flex-shrink:0;
+      box-shadow:var(--raised-sm);
+    }
+    .verdict-banner.pass { background:var(--green-bg); color:var(--green); border-left:4px solid var(--green); }
+    .verdict-banner.fail { background:var(--red-bg);   color:var(--red);   border-left:4px solid var(--red); }
+    .verdict-banner .vb-icon { font-size:1.5rem; }
+    .verdict-banner .vb-detail { font-size:0.8rem; font-weight:400; color:var(--text-mid); margin-top:2px; }
+
+    .mc-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));
+      gap:12px; flex-shrink:0;
+    }
+    .mc-card {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised-sm); padding:14px 16px;
+      border-left:3px solid var(--border);
+      position:relative;
+    }
+    .mc-card.pass { border-left-color:var(--green); }
+    .mc-card.fail { border-left-color:var(--red); }
+    .mc-card.warn { border-left-color:var(--yellow); }
+    .mc-card.na   { border-left-color:var(--muted); }
+    .mc-name  { font-size:0.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+    .mc-value { font-size:1.25rem; font-weight:700; color:var(--navy); margin-top:5px; font-family:'Cascadia Code',monospace; }
+    .mc-card.pass .mc-value { color:var(--green); }
+    .mc-card.fail .mc-value { color:var(--red); }
+    .mc-card.warn .mc-value { color:var(--yellow); }
+    .mc-spec  { font-size:0.68rem; color:var(--muted); margin-top:3px; }
+    .mc-badge {
+      position:absolute; top:10px; right:10px;
+      font-size:0.6rem; font-weight:700; padding:2px 7px; border-radius:10px;
+      text-transform:uppercase; letter-spacing:0.5px;
+    }
+    .mc-card.pass .mc-badge { background:var(--green-bg); color:var(--green); }
+    .mc-card.fail .mc-badge { background:var(--red-bg);   color:var(--red); }
+    .mc-card.warn .mc-badge { background:var(--yellow-bg);color:var(--yellow); }
+    .mc-card.na   .mc-badge { background:var(--bg);       color:var(--muted); }
+
+    .issues-panel {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised-sm); padding:14px 18px; flex-shrink:0;
+    }
+    .issues-panel h4 { font-size:0.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
+    .issue-item {
+      font-size:0.8rem; color:var(--red); padding:5px 0;
+      border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px;
+    }
+    .issue-item:last-child { border-bottom:none; }
+    .issue-item::before { content:'✗'; font-weight:700; font-size:0.9rem; }
+    .no-issues { font-size:0.82rem; color:var(--green); }
+
+    .decoded-frame-panel {
+      background:var(--navy); border-radius:var(--radius);
+      box-shadow:var(--raised-sm); padding:14px 18px; flex-shrink:0;
+    }
+    .decoded-frame-panel h4 { font-size:0.78rem; color:rgba(255,255,255,0.5); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
+    .decoded-frame-panel .df-row { display:flex; gap:16px; flex-wrap:wrap; }
+    .df-field { font-size:0.8rem; font-family:monospace; }
+    .df-field .dfl { color:rgba(255,255,255,0.4); margin-right:6px; }
+    .df-field .dfv { color:#7aaff8; font-weight:600; }
+    .df-field .dfv.hex { color:#a5d6ff; }
+    .df-field .dfv.ascii { color:#90ee90; }
+
+    .hc-chart-card {
+      background:var(--surface); border-radius:var(--radius);
+      box-shadow:var(--raised); padding:16px;
+      display:flex; flex-direction:column; min-height:300px; flex-shrink:0;
+    }
+    .hc-chart-card h3 { font-size:0.8rem; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; }
+    .hc-chart-row { display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; align-items:center; }
+    .hc-chart-row label { font-size:0.78rem; color:var(--muted); white-space:nowrap; }
+    .hc-chart-wrap { flex:1; position:relative; min-height:240px; }
+
+    .spec-table {
+      font-size:0.78rem; width:100%; border-collapse:collapse; flex-shrink:0;
+    }
+    .spec-table th {
+      background:var(--navy-mid); color:rgba(255,255,255,0.55);
+      padding:6px 12px; text-align:left; font-size:0.68rem; text-transform:uppercase; letter-spacing:0.5px;
+    }
+    .spec-table td { padding:6px 12px; border-bottom:1px solid var(--border); color:var(--text-mid); }
+    .spec-table tr:last-child td { border-bottom:none; }
+    .spec-table td:first-child { font-weight:600; color:var(--navy); }
+    .spec-table .spec-val { font-family:monospace; color:var(--accent); }
+    .spec-section { background:var(--surface); border-radius:var(--radius); box-shadow:var(--raised-sm); overflow:hidden; flex-shrink:0; }
+    .spec-section h4 { font-size:0.72rem; color:var(--muted); padding:8px 14px; background:var(--bg-deep); text-transform:uppercase; letter-spacing:0.5px; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <h1>CAN<span>discovery</span><small>AD3 CAN Health Monitor</small></h1>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <button id="btn-start-dig" style="color:#6ee8a2;">▶ Start Digital</button>
+    <button id="btn-stop-dig"  style="color:#f88;">■ Stop Digital</button>
+    <button id="btn-clear"     style="color:#ffd27a;">⊘ Clear</button>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:rgba(255,255,255,0.6);font-size:0.82rem;">
+      <input type="checkbox" id="autoscroll" checked> Auto-scroll
+    </label>
+  </div>
+  <div class="pill-group">
+    <div id="log-pill">Not logging</div>
+    <div id="status-pill">Disconnected</div>
+  </div>
+</header>
+
+<!-- DWF warning banner -->
+<div id="dwf-banner">
+  ⚠ WaveForms runtime (<code>libdwf.so</code>) not installed — AD3 capture unavailable.
+  Run <code>./setup_ad3.sh</code> to install automatically.
+  <span id="dwf-error-detail" style="opacity:0.65;"></span>
+</div>
+
+<!-- Device / channel config bar -->
+<div class="config-bar">
+  <label for="device-select">AD3 Device:</label>
+  <select id="device-select" style="min-width:260px;">
+    <option value="" disabled selected>— click Scan to detect —</option>
+  </select>
+  <button id="btn-scan">🔍 Scan</button>
+  <div id="device-badge" class="err">No device</div>
+
+  <label for="dio-select" style="margin-left:16px;">CAN Bus Pin:</label>
+  <select id="dio-select" style="min-width:80px;">
+    <option value="0">DIO 0</option><option value="1">DIO 1</option>
+    <option value="2">DIO 2</option><option value="3">DIO 3</option>
+  </select>
+  <label style="margin-left:12px;cursor:pointer;" title="Check this if wiring CAN-H directly (2.5V baseline). Leave unchecked for CAN-L or transceiver TX.">
+    <input type="checkbox" id="invert-sig"> Invert (CAN-H)
+  </label>
+  <span style="font-size:0.72rem;color:var(--muted);margin-left:10px;">CAN-L = no invert · CAN-H = invert · 125 kbps · 4 Msps</span>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab-btn active" data-tab="digital-pane">🔢 Digital Decode</button>
+  <button class="tab-btn"       data-tab="health-pane" >🏥 CAN Bus Health Check</button>
+  <button class="tab-btn"       data-tab="analog-pane" >〰 Analog Snapshot</button>
+</div>
+
+<!-- ══════════════════════════  DIGITAL TAB  ══════════════════════════════ -->
+<div class="tab-pane active" id="digital-pane">
+  <div id="capture-warn">⚠ <span id="capture-warn-text"></span></div>
+  <div class="stats-bar">
+    <span>Frames: <strong id="frame-count">0</strong></span>
+    <span>Unique IDs: <strong id="id-count">0</strong></span>
+    <span>Messages: <strong id="msg-count">0</strong></span>
+  </div>
+
+  <div id="msg-panel">
+    <div id="msg-panel-header">
+      <span class="label">⚡ Assembled Messages</span>
+      <span>Multi-frame commands decoded in full</span>
+    </div>
+    <div id="msg-list">
+      <div class="msg-empty" id="msg-empty">No messages assembled yet</div>
+    </div>
+  </div>
+
+  <div class="section-label">Raw CAN Frames</div>
+  <div class="table-wrap" id="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Timestamp</th><th>CAN ID</th><th>DLC</th><th>Hex</th><th>Decoded (ASCII)</th></tr>
+      </thead>
+      <tbody id="frame-body">
+        <tr id="empty-row">
+          <td colspan="5" class="empty-state">Connect your AD3, select a DIO pin, and press ▶ Start Digital</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════  HEALTH CHECK TAB  ═════════════════════════ -->
+<div class="tab-pane" id="health-pane">
+  <!-- Controls -->
+  <div class="hc-controls">
+    <button id="btn-health">🏥 Run Health Check</button>
+    <div id="hc-status">No check run yet</div>
+    <div style="font-size:0.75rem;color:var(--muted);margin-left:auto;">
+      CH1 = CAN-H&nbsp;&nbsp;·&nbsp;&nbsp;CH2 = CAN-L&nbsp;&nbsp;·&nbsp;&nbsp;4 Msps · 4 096 samples · ISO 11898-2 @ 125 kbps
+    </div>
+  </div>
+
+  <!-- Verdict banner -->
+  <div class="verdict-banner" id="verdict-banner">
+    <div class="vb-icon" id="verdict-icon"></div>
+    <div>
+      <div id="verdict-text"></div>
+      <div class="vb-detail" id="verdict-detail"></div>
+    </div>
+  </div>
+
+  <!-- Metric cards -->
+  <div class="mc-grid" id="mc-grid">
+    <div class="mc-card na" id="mc-rise">
+      <div class="mc-name">Rise Time (avg)</div>
+      <div class="mc-value" id="mcv-rise">—</div>
+      <div class="mc-spec">spec: ≤ 2.4 µs  (0.3 × 8 µs bit)</div>
+      <div class="mc-badge" id="mcb-rise">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-fall">
+      <div class="mc-name">Fall Time (avg)</div>
+      <div class="mc-value" id="mcv-fall">—</div>
+      <div class="mc-spec">spec: ≤ 2.4 µs  (0.3 × 8 µs bit)</div>
+      <div class="mc-badge" id="mcb-fall">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-bit">
+      <div class="mc-name">Bit Period</div>
+      <div class="mc-value" id="mcv-bit">—</div>
+      <div class="mc-spec">spec: 8.000 µs ± 1.25 %</div>
+      <div class="mc-badge" id="mcb-bit">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-diffd">
+      <div class="mc-name">Diff Dominant (peak)</div>
+      <div class="mc-value" id="mcv-diffd">—</div>
+      <div class="mc-spec">spec: 1.5 – 3.0 V (CAN-H minus CAN-L)</div>
+      <div class="mc-badge" id="mcb-diffd">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-canh">
+      <div class="mc-name">CAN-H Dominant</div>
+      <div class="mc-value" id="mcv-canh">—</div>
+      <div class="mc-spec">spec: 2.75 – 4.5 V</div>
+      <div class="mc-badge" id="mcb-canh">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-canl">
+      <div class="mc-name">CAN-L Dominant</div>
+      <div class="mc-value" id="mcv-canl">—</div>
+      <div class="mc-spec">spec: 0.5 – 2.25 V</div>
+      <div class="mc-badge" id="mcb-canl">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-rec">
+      <div class="mc-name">Recessive (CAN-H)</div>
+      <div class="mc-value" id="mcv-rec">—</div>
+      <div class="mc-spec">spec: 2.0 – 3.0 V</div>
+      <div class="mc-badge" id="mcb-rec">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-noise">
+      <div class="mc-name">Noise (recessive RMS)</div>
+      <div class="mc-value" id="mcv-noise">—</div>
+      <div class="mc-spec">spec: &lt; 50 mV RMS</div>
+      <div class="mc-badge" id="mcb-noise">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-os">
+      <div class="mc-name">Overshoot</div>
+      <div class="mc-value" id="mcv-os">—</div>
+      <div class="mc-spec">% of differential swing</div>
+      <div class="mc-badge" id="mcb-os">N/A</div>
+    </div>
+    <div class="mc-card na" id="mc-edges">
+      <div class="mc-name">Edges Detected</div>
+      <div class="mc-value" id="mcv-edges">—</div>
+      <div class="mc-spec">transitions in capture window</div>
+      <div class="mc-badge" id="mcb-edges">INFO</div>
+    </div>
+  </div>
+
+  <!-- Decoded frame -->
+  <div class="decoded-frame-panel" id="df-panel" style="display:none;">
+    <h4>📦 CAN Frame Decoded from Analog Signal</h4>
+    <div class="df-row" id="df-row"></div>
+  </div>
+
+  <!-- Issues list -->
+  <div class="issues-panel" id="issues-panel" style="display:none;">
+    <h4>⚠ Issues Found</h4>
+    <div id="issues-list"></div>
+  </div>
+
+  <!-- Waveform chart -->
+  <div class="hc-chart-card">
+    <h3>Waveform — 4 Msps · CH1 = CAN-H · CH2 = CAN-L · Differential</h3>
+    <div class="hc-chart-row">
+      <label>Show:</label>
+      <label><input type="checkbox" id="hc-show-ch1" checked> <span style="color:var(--teal);">CH1 (CAN-H)</span></label>
+      <label><input type="checkbox" id="hc-show-ch2" checked> <span style="color:var(--orange);">CH2 (CAN-L)</span></label>
+      <label><input type="checkbox" id="hc-show-diff" checked> <span style="color:#6b46c1;">Diff (H−L)</span></label>
+      <label style="margin-left:auto;">Zoom (µs):
+        <select id="hc-zoom" style="margin-left:4px;">
+          <option value="0">Full view</option>
+          <option value="64" selected>64 µs (8 bits)</option>
+          <option value="128">128 µs (16 bits)</option>
+          <option value="512">512 µs (64 bits)</option>
+        </select>
+      </label>
+    </div>
+    <div class="hc-chart-wrap">
+      <canvas id="hc-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- ISO 11898-2 reference spec table -->
+  <div class="spec-section">
+    <h4>ISO 11898-2 Reference — 125 kbps</h4>
+    <table class="spec-table">
+      <thead><tr><th>Parameter</th><th>Symbol</th><th>Min</th><th>Max</th><th>Unit</th></tr></thead>
+      <tbody>
+        <tr><td>Bit time</td><td class="spec-val">t<sub>bit</sub></td><td>—</td><td class="spec-val">8.000</td><td>µs</td></tr>
+        <tr><td>Rise time (diff.)</td><td class="spec-val">t<sub>r</sub></td><td>—</td><td class="spec-val">2.4</td><td>µs</td></tr>
+        <tr><td>Fall time (diff.)</td><td class="spec-val">t<sub>f</sub></td><td>—</td><td class="spec-val">2.4</td><td>µs</td></tr>
+        <tr><td>Diff. dominant voltage</td><td class="spec-val">V<sub>DIFF,D</sub></td><td class="spec-val">1.5</td><td class="spec-val">3.0</td><td>V</td></tr>
+        <tr><td>Diff. recessive voltage</td><td class="spec-val">V<sub>DIFF,R</sub></td><td>—</td><td class="spec-val">0.5</td><td>V</td></tr>
+        <tr><td>CAN-H dominant</td><td class="spec-val">V<sub>H,D</sub></td><td class="spec-val">2.75</td><td class="spec-val">4.5</td><td>V</td></tr>
+        <tr><td>CAN-L dominant</td><td class="spec-val">V<sub>L,D</sub></td><td class="spec-val">0.5</td><td class="spec-val">2.25</td><td>V</td></tr>
+        <tr><td>CAN-H recessive</td><td class="spec-val">V<sub>H,R</sub></td><td class="spec-val">2.0</td><td class="spec-val">3.0</td><td>V</td></tr>
+        <tr><td>CAN-L recessive</td><td class="spec-val">V<sub>L,R</sub></td><td class="spec-val">2.0</td><td class="spec-val">3.0</td><td>V</td></tr>
+        <tr><td>Recessive noise RMS</td><td class="spec-val">V<sub>noise</sub></td><td>—</td><td class="spec-val">50</td><td>mV</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════  ANALOG SNAPSHOT TAB  ═════════════════════ -->
+<div class="tab-pane" id="analog-pane">
+  <div class="analog-controls">
+    <label class="channel-toggle">
+      <input type="checkbox" id="ch1-en" checked>
+      <span class="ch1-label">CH1 (CAN-H)</span>
+    </label>
+    <label class="channel-toggle">
+      <input type="checkbox" id="ch2-en" checked>
+      <span class="ch2-label">CH2 (CAN-L)</span>
+    </label>
+    <label>Voltage range:
+      <select id="v-range">
+        <option value="5">±5 V</option>
+        <option value="2.5" selected>±2.5 V</option>
+        <option value="1">±1 V</option>
+      </select>
+    </label>
+    <label>Offset:
+      <select id="v-offset">
+        <option value="0" selected>0 V</option>
+        <option value="1.25">+1.25 V</option>
+        <option value="2.5">+2.5 V</option>
+        <option value="-1.25">−1.25 V</option>
+      </select>
+    </label>
+    <button id="btn-snapshot">📷 Capture Snapshot</button>
+    <div id="snapshot-status">No snapshot yet</div>
+  </div>
+
+  <div class="health-cards" id="health-cards">
+    <div class="hcard" id="hc-vhigh"><div class="hc-label">CH1 Peak High</div><div class="hc-value" id="hv-vhigh">—</div><div class="hc-sub">V (CAN-H)</div></div>
+    <div class="hcard" id="hc-vlow"><div class="hc-label">CH2 Peak High</div><div class="hc-value" id="hv-vlow">—</div><div class="hc-sub">V (CAN-L)</div></div>
+    <div class="hcard" id="hc-diff"><div class="hc-label">Differential Peak</div><div class="hc-value" id="hv-diff">—</div><div class="hc-sub">V (H−L, dom. bit)</div></div>
+    <div class="hcard" id="hc-noise"><div class="hc-label">CH1 Noise (idle)</div><div class="hc-value" id="hv-noise">—</div><div class="hc-sub">mV RMS</div></div>
+    <div class="hcard" id="hc-rec"><div class="hc-label">Recessive Level</div><div class="hc-value" id="hv-rec">—</div><div class="hc-sub">V CH1 baseline</div></div>
+    <div class="hcard" id="hc-health"><div class="hc-label">Bus Health</div><div class="hc-value" id="hv-health">—</div><div class="hc-sub">Overall assessment</div></div>
+  </div>
+
+  <div class="chart-card">
+    <h3>Oscilloscope — 50 ms snapshot @ 2 Msps (125 kbps CAN)</h3>
+    <div class="chart-wrap"><canvas id="scope-canvas"></canvas></div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+
+  // ── Tab switching ────────────────────────────────────────────────────────
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById(btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ── Refs — shared ────────────────────────────────────────────────────────
+  const statusPill   = document.getElementById("status-pill");
+  const logPill      = document.getElementById("log-pill");
+  const deviceSelect = document.getElementById("device-select");
+  const deviceBadge  = document.getElementById("device-badge");
+  const dioSelect    = document.getElementById("dio-select");
+  let deviceList = [];
+
+  function getDeviceIndex() {
+    const idx = parseInt(deviceSelect.value);
+    return (!isNaN(idx) && deviceList[idx]) ? deviceList[idx].index : 0;
+  }
+
+  // ── DWF status ───────────────────────────────────────────────────────────
+  socket.on("dwf_status", d => {
+    if (!d.available) {
+      const b = document.getElementById("dwf-banner");
+      b.style.display = "block";
+      document.getElementById("dwf-error-detail").textContent = d.error ? `  (${d.error})` : "";
+    }
+  });
+
+  // ── Device scan ──────────────────────────────────────────────────────────
+  document.getElementById("btn-scan").addEventListener("click", () => {
+    const btn = document.getElementById("btn-scan");
+    btn.textContent = "Scanning…"; btn.disabled = true;
+    socket.emit("scan_devices");
+  });
+
+  socket.on("device_list", data => {
+    const btn = document.getElementById("btn-scan");
+    btn.textContent = "🔍 Scan"; btn.disabled = false;
+    deviceList = data.devices;
+    deviceSelect.innerHTML = "";
+    if (!deviceList.length) {
+      const o = document.createElement("option");
+      o.textContent = "— No AD3 devices detected —"; o.disabled = true; o.selected = true;
+      deviceSelect.appendChild(o);
+      deviceBadge.textContent = "No device"; deviceBadge.className = "err"; return;
+    }
+    deviceList.forEach((dev, i) => {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = dev.label; deviceSelect.appendChild(o);
+    });
+    deviceSelect.selectedIndex = 0;
+    updateDevBadge();
+  });
+
+  deviceSelect.addEventListener("change", updateDevBadge);
+  function updateDevBadge() {
+    const idx = parseInt(deviceSelect.value);
+    if (isNaN(idx) || !deviceList[idx]) { deviceBadge.textContent = "No device"; deviceBadge.className = "err"; return; }
+    const d = deviceList[idx];
+    deviceBadge.textContent = `AD3 #${d.index}  ${d.name}`; deviceBadge.className = "ok";
+  }
+
+  // ── Digital controls ─────────────────────────────────────────────────────
+  const tbody       = document.getElementById("frame-body");
+  const tableWrap   = document.getElementById("table-wrap");
+  const msgList     = document.getElementById("msg-list");
+  const autoscroll  = document.getElementById("autoscroll");
+  const captureWarn = document.getElementById("capture-warn");
+  let frameCount = 0, msgCount = 0;
+  const seenIds = new Set();
+  const MAX_ROWS = 2000;
+
+  document.getElementById("btn-start-dig").addEventListener("click", () =>
+    socket.emit("start_digital", { device_index: getDeviceIndex(), dio_channel: parseInt(dioSelect.value), invert: document.getElementById("invert-sig").checked }));
+  document.getElementById("btn-stop-dig").addEventListener("click", () =>
+    socket.emit("stop_digital"));
+  document.getElementById("btn-clear").addEventListener("click", () => {
+    tbody.innerHTML = '<tr id="empty-row"><td colspan="5" class="empty-state">Press ▶ Start Digital to begin capture</td></tr>';
+    msgList.innerHTML = '<div class="msg-empty" id="msg-empty">No messages assembled yet</div>';
+    frameCount = 0; msgCount = 0; seenIds.clear();
+    document.getElementById("frame-count").textContent = "0";
+    document.getElementById("id-count").textContent    = "0";
+    document.getElementById("msg-count").textContent   = "0";
+    socket.emit("clear_frames");
+  });
+
+  socket.on("status", d => {
+    statusPill.textContent = d.msg;
+    statusPill.className = d.running ? "running" : d.error ? "error" : "stopped";
+  });
+  socket.on("log_status", d => {
+    if (d.active) { logPill.textContent = `📼 ${d.filename}`; logPill.className = "logging"; }
+    else { logPill.textContent = d.msg || "Not logging"; logPill.className = ""; }
+  });
+  socket.on("capture_warn", d => {
+    captureWarn.style.display = "block";
+    document.getElementById("capture-warn-text").textContent = d.msg;
+    clearTimeout(captureWarn._t);
+    captureWarn._t = setTimeout(() => { captureWarn.style.display = "none"; }, 5000);
+  });
+
+  socket.on("frame", f => {
+    const emptyRow = document.getElementById("empty-row");
+    if (emptyRow) emptyRow.remove();
+    while (tbody.rows.length >= MAX_ROWS) tbody.deleteRow(0);
+    frameCount++; seenIds.add(f.id);
+    document.getElementById("frame-count").textContent = frameCount;
+    document.getElementById("id-count").textContent    = seenIds.size;
+    const hexSpans = f.hex.map(h => `<span>${h}</span>`).join("");
+    const decodedChars = f.hex.map((h, i) => {
+      const ch = f.text[i], isPrint = ch && ch !== "·";
+      return `<span class="byte-char ${isPrint ? "" : "non-print"}">${isPrint ? ch : "·"}</span>`;
+    }).join("");
+    const tr = document.createElement("tr");
+    tr.className = "new-row";
+    tr.innerHTML = `<td class="ts">${f.ts}</td><td class="can-id">${f.id}</td><td class="dlc">${f.dlc}</td><td class="hex-cell">${hexSpans}</td><td><div class="decoded-block">${decodedChars}</div></td>`;
+    tbody.appendChild(tr);
+    if (autoscroll.checked) tableWrap.scrollTop = tableWrap.scrollHeight;
+  });
+
+  socket.on("message", m => {
+    const emptyMsg = document.getElementById("msg-empty");
+    if (emptyMsg) emptyMsg.remove();
+    msgCount++;
+    document.getElementById("msg-count").textContent = msgCount;
+    const prettyHtml = m.is_json ? `<details><summary>Pretty JSON</summary><pre>${esc(m.pretty)}</pre></details>` : "";
+    const card = document.createElement("div");
+    card.className = "msg-card";
+    card.innerHTML = `<div class="msg-meta"><span>${m.ts}</span><span class="mid">${m.id}</span><span class="mframes">${m.frames} frames</span></div><div class="msg-raw ${m.is_json ? "is-json" : ""}">${esc(m.raw)}</div>${prettyHtml}`;
+    msgList.appendChild(card);
+    document.getElementById("msg-panel").scrollTop = 9999;
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // HEALTH CHECK
+  // ══════════════════════════════════════════════════════════════════════════
+  let _hcWaveform = null;  // raw waveform data from last health check
+
+  document.getElementById("btn-health").addEventListener("click", () => {
+    socket.emit("run_health_check", { device_index: getDeviceIndex() });
+  });
+
+  socket.on("health_check_status", d => {
+    const el = document.getElementById("hc-status");
+    el.textContent = d.msg;
+    if (d.busy)      { el.className = "busy"; document.getElementById("btn-health").disabled = true; }
+    else if (d.ok)   { el.className = "pass"; document.getElementById("btn-health").disabled = false; }
+    else             { el.className = "fail"; document.getElementById("btn-health").disabled = false; }
+  });
+
+  socket.on("health_check_result", data => {
+    const m = data.metrics;
+    if (m.error) {
+      document.getElementById("hc-status").textContent = `⚠ ${m.error}`;
+      document.getElementById("hc-status").className = "fail";
+      return;
+    }
+
+    _hcWaveform = data.waveform;
+
+    // ── Verdict banner ──────────────────────────────────────────────────
+    const banner = document.getElementById("verdict-banner");
+    const isPass = m.overall === "PASS";
+    banner.className = "verdict-banner " + (isPass ? "pass" : "fail");
+    banner.style.display = "flex";
+    document.getElementById("verdict-icon").textContent = isPass ? "✅" : "❌";
+    document.getElementById("verdict-text").textContent =
+      isPass ? "CAN Bus PASS — All parameters within ISO 11898-2 specification"
+             : `CAN Bus FAIL — ${m.issues.length} parameter(s) out of specification`;
+    const dec = m.n_decoded > 0 ? `${m.n_decoded} frame(s) decoded · ` : "";
+    document.getElementById("verdict-detail").textContent =
+      `${dec}${m.edge_count} edges · ${data.n_samples} samples @ ${(data.sample_rate/1e6).toFixed(0)} Msps`;
+
+    // ── Metric cards ────────────────────────────────────────────────────
+    function setCard(id, value, unit, specText, statusFn) {
+      const card  = document.getElementById("mc-" + id);
+      const valEl = document.getElementById("mcv-" + id);
+      const badEl = document.getElementById("mcb-" + id);
+      if (value === null || value === undefined) {
+        valEl.textContent = "—"; card.className = "mc-card na"; badEl.textContent = "N/A"; return;
+      }
+      valEl.textContent = value + " " + unit;
+      const status = statusFn(value);   // "pass", "fail", "warn", "info"
+      card.className = "mc-card " + (status === "info" ? "na" : status);
+      badEl.textContent = status.toUpperCase();
+    }
+
+    const spec = m.spec;
+    setCard("rise",  m.avg_rise_us,      "µs", "", v => v <= spec.rise_fall_max_us ? "pass" : "fail");
+    setCard("fall",  m.avg_fall_us,      "µs", "", v => v <= spec.rise_fall_max_us ? "pass" : "fail");
+    setCard("bit",   m.bit_period_us,    "µs", "",
+      v => Math.abs(v - spec.bit_period_us) / spec.bit_period_us * 100 <= 1.25 ? "pass" : "fail");
+    setCard("diffd", m.diff_dom_peak_v,  "V",  "",
+      v => v >= spec.dom_diff_min_v && v <= spec.dom_diff_max_v ? "pass" : "fail");
+    setCard("canh",  m.ch1_dom_peak_v,   "V",  "",
+      v => v !== null && v >= spec.dom_h_min_v && v <= 4.5 ? "pass" : "fail");
+    setCard("canl",  m.ch2_dom_min_v,    "V",  "",
+      v => v !== null && v >= 0.5 && v <= spec.dom_l_max_v ? "pass" : "fail");
+    setCard("rec",   m.ch1_rec_mean_v,   "V",  "",
+      v => v !== null && v >= 2.0 && v <= 3.0 ? "pass" : "fail");
+    setCard("noise", m.noise_rms_mv,     "mV", "",
+      v => v !== null && v <= spec.noise_max_mv ? "pass" : v <= 150 ? "warn" : "fail");
+    setCard("os",    m.overshoot_pct,    "%",  "",
+      v => v <= 10 ? "pass" : v <= 20 ? "warn" : "fail");
+    // Edges — info only
+    const edgesEl = document.getElementById("mcv-edges");
+    edgesEl.textContent = m.edge_count;
+    document.getElementById("mc-edges").className = "mc-card na";
+    document.getElementById("mcb-edges").textContent = "INFO";
+
+    // ── Decoded frame ───────────────────────────────────────────────────
+    const dfPanel = document.getElementById("df-panel");
+    if (m.decoded_frame) {
+      const f = m.decoded_frame;
+      const hx = f.hex.map(h => `<span>${h}</span>`).join(" ");
+      document.getElementById("df-row").innerHTML = `
+        <div class="df-field"><span class="dfl">ID</span><span class="dfv">${f.id}</span></div>
+        <div class="df-field"><span class="dfl">DLC</span><span class="dfv">${f.dlc}</span></div>
+        <div class="df-field"><span class="dfl">Hex</span><span class="dfv hex">${hx || "(empty)"}</span></div>
+        <div class="df-field"><span class="dfl">ASCII</span><span class="dfv ascii">${esc(f.text || "(empty)")}</span></div>
+        <div class="df-field"><span class="dfl">Time</span><span class="dfv">${f.ts}</span></div>`;
+      dfPanel.style.display = "block";
+    } else {
+      dfPanel.style.display = "none";
+    }
+
+    // ── Issues panel ────────────────────────────────────────────────────
+    const issPanel = document.getElementById("issues-panel");
+    const issList  = document.getElementById("issues-list");
+    if (m.issues && m.issues.length) {
+      issList.innerHTML = m.issues.map(s => `<div class="issue-item">${esc(s)}</div>`).join("");
+      issPanel.style.display = "block";
+    } else {
+      issList.innerHTML = '<div class="no-issues">✓ All parameters within specification</div>';
+      issPanel.style.display = "block";
+    }
+
+    // ── Waveform chart ──────────────────────────────────────────────────
+    renderHcChart();
+  });
+
+  // ── Health-check chart ─────────────────────────────────────────────────
+  let hcChart = null;
+
+  function initHcChart() {
+    const ctx = document.getElementById("hc-canvas").getContext("2d");
+    hcChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          { label: "CH1 — CAN-H", data: [], borderColor: "#0d7377", backgroundColor: "transparent", borderWidth: 1.2, pointRadius: 0, tension: 0 },
+          { label: "CH2 — CAN-L", data: [], borderColor: "#c85a1a", backgroundColor: "transparent", borderWidth: 1.2, pointRadius: 0, tension: 0 },
+          { label: "Diff (H−L)",  data: [], borderColor: "#6b46c1", backgroundColor: "rgba(107,70,193,0.06)", borderWidth: 1.5, pointRadius: 0, tension: 0 },
+        ],
+      },
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { labels: { color: "#3a4a6b", font: { size: 11 } } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} V` } },
+        },
+        scales: {
+          x: {
+            ticks: { color: "#7a8aab", maxTicksLimit: 12,
+              callback: (v, i) => { const l = hcChart.data.labels[i]; return l !== undefined ? l.toFixed(1) + " µs" : ""; }
+            },
+            grid: { color: "rgba(26,39,68,0.08)" },
+            title: { display: true, text: "Time (µs)", color: "#7a8aab" },
+          },
+          y: {
+            ticks: { color: "#7a8aab", callback: v => v.toFixed(2) + " V" },
+            grid: { color: "rgba(26,39,68,0.08)" },
+            title: { display: true, text: "Voltage (V)", color: "#7a8aab" },
+          },
+        },
+      },
+    });
+  }
+  initHcChart();
+
+  function renderHcChart() {
+    if (!_hcWaveform || !hcChart) return;
+    const wf = _hcWaveform;
+    const zoom = parseInt(document.getElementById("hc-zoom").value);
+    const showCh1  = document.getElementById("hc-show-ch1").checked;
+    const showCh2  = document.getElementById("hc-show-ch2").checked;
+    const showDiff = document.getElementById("hc-show-diff").checked;
+
+    let t = wf.time_us, ch1 = wf.ch1, ch2 = wf.ch2, diff = wf.diff;
+
+    // Apply zoom (keep points from T=0 to T=zoom µs)
+    if (zoom > 0) {
+      const maxT = t[0] + zoom;
+      const cutIdx = t.findIndex(v => v > maxT);
+      if (cutIdx > 1) {
+        t    = t.slice(0, cutIdx);
+        ch1  = ch1.slice(0, cutIdx);
+        ch2  = ch2.slice(0, cutIdx);
+        diff = diff.slice(0, cutIdx);
+      }
+    }
+
+    hcChart.data.labels = t;
+    hcChart.data.datasets[0].data   = showCh1  ? ch1  : [];
+    hcChart.data.datasets[1].data   = showCh2  ? ch2  : [];
+    hcChart.data.datasets[2].data   = showDiff ? diff : [];
+    hcChart.data.datasets[0].hidden = !showCh1;
+    hcChart.data.datasets[1].hidden = !showCh2;
+    hcChart.data.datasets[2].hidden = !showDiff;
+    hcChart.update("none");
+  }
+
+  // Re-render on zoom / channel toggle change
+  ["hc-zoom", "hc-show-ch1", "hc-show-ch2", "hc-show-diff"].forEach(id =>
+    document.getElementById(id).addEventListener("change", renderHcChart));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ANALOG SNAPSHOT TAB
+  // ══════════════════════════════════════════════════════════════════════════
+  const snapshotBtn    = document.getElementById("btn-snapshot");
+  const snapshotStatus = document.getElementById("snapshot-status");
+
+  snapshotBtn.addEventListener("click", () => {
+    socket.emit("analog_snapshot", {
+      device_index: getDeviceIndex(),
+      ch1:   document.getElementById("ch1-en").checked,
+      ch2:   document.getElementById("ch2-en").checked,
+      v_range:  parseFloat(document.getElementById("v-range").value),
+      v_offset: parseFloat(document.getElementById("v-offset").value),
+    });
+  });
+  socket.on("snapshot_status", d => {
+    snapshotStatus.textContent = d.msg;
+    snapshotStatus.className   = d.busy ? "busy" : (d.msg.startsWith("Error") ? "err" : "ok");
+    snapshotBtn.disabled = d.busy;
+  });
+
+  let scopeChart = null;
+  function initScopeChart() {
+    const ctx = document.getElementById("scope-canvas").getContext("2d");
+    scopeChart = new Chart(ctx, {
+      type: "line",
+      data: { labels: [], datasets: [
+        { label: "CH1 — CAN-H", data: [], borderColor: "#0d7377", backgroundColor: "transparent", borderWidth: 1.2, pointRadius: 0, tension: 0 },
+        { label: "CH2 — CAN-L", data: [], borderColor: "#c85a1a", backgroundColor: "transparent", borderWidth: 1.2, pointRadius: 0, tension: 0 },
+      ]},
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { labels: { color: "#3a4a6b", font: { size: 12 } } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} V` } },
+        },
+        scales: {
+          x: {
+            ticks: { color: "#7a8aab", maxTicksLimit: 12,
+              callback: (v, i) => { const l = scopeChart.data.labels[i]; return l !== undefined ? l.toFixed(1) + " µs" : ""; }
+            },
+            grid: { color: "rgba(26,39,68,0.08)" },
+            title: { display: true, text: "Time (µs)", color: "#7a8aab" },
+          },
+          y: {
+            ticks: { color: "#7a8aab", callback: v => v.toFixed(2) + " V" },
+            grid: { color: "rgba(26,39,68,0.08)" },
+            title: { display: true, text: "Voltage (V)", color: "#7a8aab" },
+          },
+        },
+      },
+    });
+  }
+  initScopeChart();
+
+  socket.on("snapshot_data", d => {
+    const ch1 = d.ch1 || [], ch2 = d.ch2 || [], t = d.time_us || [];
+    scopeChart.data.labels = t;
+    scopeChart.data.datasets[0].data = ch1;
+    scopeChart.data.datasets[1].data = ch2;
+    scopeChart.update("none");
+    computeHealth(ch1, ch2);
+  });
+
+  function computeHealth(ch1, ch2) {
+    function stats(arr) {
+      if (!arr.length) return null;
+      const min = Math.min(...arr), max = Math.max(...arr);
+      const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+      const variance = arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length;
+      return { min, max, mean, rms: Math.sqrt(variance) };
+    }
+    const s1 = stats(ch1), s2 = stats(ch2);
+    let diffPeak = null;
+    if (ch1.length && ch2.length) diffPeak = Math.max(...ch1.map((v, i) => v - (ch2[i] || 0)));
+    let recLevel = null;
+    if (s1) { const sorted = [...ch1].sort((a, b) => a - b); const top40 = sorted.slice(Math.floor(sorted.length * 0.6)); recLevel = top40.reduce((a, b) => a + b) / top40.length; }
+    let noiseRms = null;
+    if (s1 && recLevel !== null) { const idle = ch1.filter(v => Math.abs(v - recLevel) < 0.5); if (idle.length > 10) { const m = idle.reduce((a, b) => a + b) / idle.length; noiseRms = Math.sqrt(idle.reduce((s, v) => s + (v - m) ** 2, 0) / idle.length) * 1000; } }
+    let hv = "Unknown", hcls = "";
+    if (s1 && diffPeak !== null) {
+      if (diffPeak >= 1.5 && s1.max >= 2.75 && recLevel >= 2.0 && recLevel <= 3.0) { hv = "GOOD ✓"; hcls = "good"; }
+      else if (diffPeak >= 1.0) { hv = "MARGINAL ⚠"; hcls = "warn"; }
+      else { hv = "POOR ✗"; hcls = "bad"; }
+    }
+    function setCard(id, val, cls) {
+      document.getElementById(id).textContent = val;
+      if (cls) document.getElementById("hc-" + id.replace("hv-","")).className = "hcard " + cls;
+    }
+    setCard("hv-vhigh", s1 ? s1.max.toFixed(3) : "—", s1 ? (s1.max >= 2.75 ? "good" : s1.max >= 2.0 ? "warn" : "bad") : "");
+    setCard("hv-vlow",  s2 ? s2.max.toFixed(3) : "—", "");
+    setCard("hv-diff",  diffPeak !== null ? diffPeak.toFixed(3) : "—", diffPeak !== null ? (diffPeak >= 1.5 ? "good" : diffPeak >= 1.0 ? "warn" : "bad") : "");
+    setCard("hv-noise", noiseRms !== null ? noiseRms.toFixed(1) : "—", noiseRms !== null ? (noiseRms < 50 ? "good" : noiseRms < 150 ? "warn" : "bad") : "");
+    setCard("hv-rec",   recLevel !== null ? recLevel.toFixed(3) : "—", recLevel !== null ? (recLevel >= 2.0 && recLevel <= 3.0 ? "good" : "warn") : "");
+    setCard("hv-health", hv, hcls);
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  // Auto-scan on connect
+  socket.on("connect", () => socket.emit("scan_devices"));
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+flask>=3.0
+flask-socketio>=5.3
+pydwf>=1.1.0
+pyserial>=3.5
