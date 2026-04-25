@@ -187,15 +187,17 @@ def scan_ad3_devices() -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 def _compute_health_metrics(ch1: list, ch2: list, sample_rate: int) -> dict:
     """
-    Derive ISO 11898-2 CAN bus health metrics from raw ADC voltage samples.
+    ISO 11898-2 CAN bus health metrics from raw ADC voltage samples.
 
-    ch1  : CAN-H voltages (list of floats)
-    ch2  : CAN-L voltages (list of floats, same length as ch1)
-    sample_rate : samples per second
+    ch1         : CAN-H voltages (V), list of floats, length N
+    ch2         : CAN-L voltages (V), list of floats, same length
+    sample_rate : samples per second (e.g. 1_000_000)
+
+    At 1 MHz / 125 kbps: 8 samples per bit, 16 384 samples ≈ 2048 CAN bits.
     """
     n = len(ch1)
-    if n < 100:
-        return {"error": "Insufficient samples (<100)"}
+    if n < 500:
+        return {"error": f"Insufficient samples ({n} < 500)"}
 
     t_us = 1e6 / sample_rate          # µs per sample
     has_ch2 = len(ch2) == n and n > 0
@@ -453,25 +455,40 @@ def _compute_health_metrics(ch1: list, ch2: list, sample_rate: int) -> dict:
 
 
 def _do_analog_health_check(dev_index: int) -> dict:
-    """
-    Capture 16384 samples at 4 MHz from AD3 CH1 + CH2.
-
-    Root cause (proven across all attempts):
-      ANY USB round-trip during active ADC DMA stalls the AD3 FPGA on RPi4.
-      This includes status(True), status(False), AND triggerPC() — every USB
-      transaction freezes the ADC regardless of mode or trigger source.
-
-    Strategy: single-shot sleep-then-read
-      - TriggerSource.None_ = free-run: device fires immediately at Armed,
-        no USB trigger command required at all.
-      - triggerPosition=0: trigger at center, Prefill=2ms, total capture=4ms.
-      - Sleep 1 s with ZERO USB activity.  ADC Done for ~996 ms.
-      - ONE status(True) call transfers the completed SRAM buffer.
-      - Two statusData() calls read both channels from the host buffer.
-
-    This was never tried before — all previous attempts polled in a loop which
-    stalled the ADC on the first or second call.
-    """
+    # ── v3.0 ──────────────────────────────────────────────────────────────────
+    # CAN Bus Health Capture — Single mode, hardware analog trigger, sleep-then-read
+    #
+    # Hardware: AD3 CH1 = CANH, CH2 = CANL, both referenced to CAN ground.
+    # Target:   125 kbps CAN, ISO 11898-2 electrical compliance analysis.
+    #
+    # Sample rate: 1 MHz  →  16 384 samples  =  16.384 ms window
+    #              captures ~2048 CAN bits at 125 kbps.
+    #              1 µs / sample  →  ~8 samples / bit  →  adequate for rise/fall timing.
+    #
+    # NOTE: A 2-second capture at useful resolution is architecturally impossible
+    # on this platform. The AD3 hardware buffer holds 16 384 samples maximum.
+    # At 1 MHz that is 16.384 ms — which covers 2048 CAN bits and is more than
+    # sufficient for full ISO 11898-2 statistical analysis.  Record mode streaming
+    # is unusable on RPi4 Linux due to a USB DMA stall in the AD3 firmware.
+    #
+    # Root cause (confirmed across all previous attempts):
+    #   ANY USB round-trip during active AD3 ADC DMA stalls the acquisition.
+    #   This affects status(True), status(False), triggerPC(), and any other
+    #   USB call to the device while sampling is in progress.
+    #
+    # Strategy — hardware trigger + single sleep-then-read:
+    #   1. Analog trigger on CH1 (CANH) EITHER edge at 2.0 V threshold.
+    #      The CAN bus fires an edge within 8 µs — no USB call needed.
+    #   2. triggerAutoTimeoutSet(0.001) → ~84 ms safety fallback if bus is quiet.
+    #   3. triggerPositionSet(-T/4)  →  25 % pre-trigger, 75 % post-trigger.
+    #      Prefill = 4096 samples = 4.096 ms at 1 MHz  →  fast, doesn't stall.
+    #   4. configure(False, True) → ADC starts.  Complete USB silence thereafter.
+    #      Timeline: Prefill ~4 ms → Armed → trigger fires ≤8 µs (or 84 ms) →
+    #                post-trigger ~12 ms → Done.  Total wall time ≤ ~100 ms.
+    #   5. Sleep 2 seconds.  ADC has been Done for ≥1.9 s by the time we poll.
+    #   6. ONE status(True) call.  No in-flight DMA → no stall.
+    #      TWO statusData() calls read both channels from the host buffer.
+    # ──────────────────────────────────────────────────────────────────────────
     import numpy as np
 
     def dbg(msg):
@@ -486,83 +503,105 @@ def _do_analog_health_check(dev_index: int) -> dict:
             scope = device.analogIn
             scope.reset()
 
-            record_n  = HEALTH_N_SAMPLES               # 16 384
-            capture_s = record_n / HEALTH_SAMPLE_RATE  # 4.096 ms
+            SAMPLE_RATE = 1_000_000     # 1 MHz — 8 samples/bit at 125 kbps
+            N_SAMPLES   = 16_384        # hardware maximum
 
+            # ── Channels: ±5 V range, offset 2.5 V (0–5 V window for CAN) ──
             for ch in range(2):
                 scope.channelEnableSet(ch, True)
                 scope.channelRangeSet(ch, 5.0)
                 scope.channelOffsetSet(ch, 2.5)
                 scope.channelFilterSet(ch, DwfAnalogInFilter.Decimate)
 
+            # ── Single mode — entire capture stored in device SRAM ──────────
             scope.acquisitionModeSet(DwfAcquisitionMode.Single)
-            scope.frequencySet(HEALTH_SAMPLE_RATE)
-            scope.bufferSizeSet(record_n)
-            # TriggerSource.None_ alone = device waits in Prefill forever.
-            # triggerAutoTimeoutSet fires the trigger automatically after ~84ms
-            # (firmware minimum) with zero USB interaction during acquisition.
-            scope.triggerSourceSet(DwfTriggerSource.None_)
-            scope.triggerPositionSet(0.0)           # trigger at center
-            scope.triggerAutoTimeoutSet(0.001)      # snaps to ~84ms on AD3
+            scope.frequencySet(SAMPLE_RATE)
+            scope.bufferSizeSet(N_SAMPLES)
 
-            actual_freq    = scope.frequencyGet()
-            actual_buf     = scope.bufferSizeGet()
+            actual_freq = scope.frequencyGet()
+            actual_buf  = scope.bufferSizeGet()
+            T_s = actual_buf / actual_freq   # total capture window in seconds
+
+            # Trigger position: -T/4 → trigger at 25% of buffer
+            # Pre-trigger = 25%  = 4096 samples = 4.096 ms  →  short Prefill
+            # Post-trigger = 75% = 12288 samples = 12.288 ms →  captures active bus
+            scope.triggerPositionSet(-T_s / 4)
+
+            # Hardware analog trigger: CANH (CH1) either edge at 2.0 V
+            # Fires on first CAN transition — zero USB interaction.
+            scope.triggerSourceSet(DwfTriggerSource.DetectorAnalogIn)
+            scope.triggerTypeSet(DwfAnalogInTriggerType.Edge)
+            scope.triggerChannelSet(0)                   # CH1 = CANH
+            scope.triggerConditionSet(DwfTriggerSlope.Either)
+            scope.triggerLevelSet(2.0)
+            scope.triggerHysteresisSet(0.1)
+            scope.triggerAutoTimeoutSet(0.001)           # ~84 ms backup
+
             actual_timeout = scope.triggerAutoTimeoutGet()
-            dbg(f"Single/autoTimeout: freq={actual_freq:.0f} Hz  buf={actual_buf}  "
+            dbg(f"v3.0 Single/AnalogTrig: freq={actual_freq:.0f} Hz  "
+                f"buf={actual_buf}  window={T_s*1000:.2f} ms  "
                 f"autoTimeout={actual_timeout*1000:.1f} ms")
+            dbg(f"Trigger: CH1 CANH either-edge @ 2.0 V  "
+                f"pre={T_s/4*1000:.1f} ms  post={T_s*3/4*1000:.1f} ms")
 
-            # Start: Prefill(2ms) → Armed → autoTimeout(84ms) → Triggered(2ms) → Done
-            # Total acquisition = ~88ms. Sleep 500ms — Done for ~412ms before USB.
+            # ── Start — then complete silence until Done ─────────────────────
             scope.configure(False, True)
-            dbg("Sleeping 500 ms (ADC hands-off)...")
-            time.sleep(0.500)
+            # Worst case: Prefill(4ms) + autoTimeout(84ms) + post-trigger(12ms)
+            # = ~100 ms.  Sleep 2 s → ADC Done for ≥1.9 s when we touch USB.
+            dbg("Sleeping 2 s (ADC hands-off)...")
+            time.sleep(2.0)
 
-            # Single status(True) — ADC has been Done for ~412 ms.
+            # ── Single read — ADC Done for ~1.9 s, no active DMA ────────────
             state = scope.status(True)
             dbg(f"After sleep: state={state.name}")
 
             if state != DwfState.Done:
                 return {"ok": False, "error":
-                        f"Acquisition not Done after 500 ms: state={state}"}
+                        f"Acquisition not Done after 2 s: state={state}. "
+                        f"Check CAN bus is connected and active (or bus is idle — "
+                        f"autoTimeout should have fired at {actual_timeout*1000:.0f} ms)."}
 
             n_valid = scope.statusSamplesValid()
-            dbg(f"n_valid={n_valid}/{record_n}")
+            dbg(f"n_valid={n_valid}/{N_SAMPLES}")
 
-            if n_valid < record_n:
+            if n_valid < N_SAMPLES // 2:
                 return {"ok": False, "error":
-                        f"Only {n_valid}/{record_n} valid samples"}
+                        f"Insufficient samples: {n_valid}/{N_SAMPLES}"}
 
-            ch1_raw = scope.statusData(0, n_valid)[:record_n]
-            ch2_raw = scope.statusData(1, n_valid)[:record_n]
-            dbg(f"CH1 mean={ch1_raw.mean():.3f} V  CH2 mean={ch2_raw.mean():.3f} V")
+            read_n  = min(n_valid, N_SAMPLES)
+            ch1_raw = scope.statusData(0, read_n)
+            ch2_raw = scope.statusData(1, read_n)
+            dbg(f"CH1 mean={float(ch1_raw.mean()):.3f} V  "
+                f"CH2 mean={float(ch2_raw.mean()):.3f} V")
 
-            ch1 = [round(float(v), 5) for v in ch1_raw]
-            ch2 = [round(float(v), 5) for v in ch2_raw]
+            ch1_f = [round(float(v), 5) for v in ch1_raw]
+            ch2_f = [round(float(v), 5) for v in ch2_raw]
 
-            step = max(1, len(ch1) // 4000)
+            # Downsample to ≤4000 points for waveform display
+            step      = max(1, read_n // 4000)
             t_step_us = step * (1e6 / actual_freq)
-            wf_t   = [round(i * t_step_us, 3)     for i in range(len(ch1[::step]))]
-            wf_ch1 = [round(float(v), 4)           for v in ch1[::step]]
-            wf_ch2 = [round(float(v), 4)           for v in ch2[::step]]
-            wf_diff= [round(float(ch1[i*step] - ch2[i*step]), 4) for i in range(len(wf_t))]
+            wf_t   = [round(i * t_step_us, 3) for i in range(len(ch1_f[::step]))]
+            wf_ch1 = [round(float(v), 4)      for v in ch1_f[::step]]
+            wf_ch2 = [round(float(v), 4)      for v in ch2_f[::step]]
+            wf_diff= [round(float(ch1_f[i * step] - ch2_f[i * step]), 4)
+                      for i in range(len(wf_t))]
 
-            metrics = _compute_health_metrics(ch1, ch2, actual_freq)
+            metrics = _compute_health_metrics(ch1_f, ch2_f, int(actual_freq))
 
             return {
-                "ok":     True,
-                "waveform": {
-                    "time_us": wf_t,
-                    "ch1":     wf_ch1,
-                    "ch2":     wf_ch2,
-                    "diff":    wf_diff,
-                },
+                "ok":          True,
+                "waveform":    {"time_us": wf_t, "ch1": wf_ch1,
+                                "ch2": wf_ch2, "diff": wf_diff},
                 "metrics":     metrics,
                 "sample_rate": actual_freq,
-                "n_samples":   record_n,
+                "n_samples":   read_n,
+                "window_ms":   round(read_n / actual_freq * 1000, 3),
             }
 
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        import traceback
+        dbg(f"Exception: {e}")
+        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
